@@ -595,15 +595,11 @@ void WebRtcVoiceEngine::ApplyOptions(const AudioOptions& options_in) {
                    << options_in.ToString();
   AudioOptions options = options_in;  // The options are modified below.
 
-  // Set and adjust echo canceller options.
-  // Use desktop AEC by default, when not using hardware AEC.
-  bool use_mobile_software_aec = false;
-
   // Skip AEC AGC NS option manipulation for iOS adn macOS.
 #if !(defined(WEBRTC_IOS) || defined(WEBRTC_MAC))
 
 #if defined(WEBRTC_ANDROID)
-  use_mobile_software_aec = true;
+  RTC_LOG(LS_INFO) << "Disable Android Aec Mobile";
 #endif
 
 #if defined(WEBRTC_ANDROID)
@@ -700,7 +696,6 @@ void WebRtcVoiceEngine::ApplyOptions(const AudioOptions& options_in) {
 
   if (options.echo_cancellation) {
     apm_config.echo_canceller.enabled = *options.echo_cancellation;
-    apm_config.echo_canceller.mobile_mode = use_mobile_software_aec;
   }
 
   if (options.auto_gain_control) {
