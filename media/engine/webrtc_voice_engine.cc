@@ -551,10 +551,10 @@ void WebRtcVoiceEngine::Init() {
   // Set default engine options.
   {
     AudioOptions options;
-    options.echo_cancellation = false;
-    options.auto_gain_control = false;
-    options.noise_suppression = false;
-    options.highpass_filter = false;
+    options.echo_cancellation = env_.field_trials().IsEnabled("WebRTC-Audio-Engine-DefaultEnabledAEC");
+    options.auto_gain_control = env_.field_trials().IsEnabled("WebRTC-Audio-Engine-DefaultEnabledAGC");
+    options.noise_suppression = env_.field_trials().IsEnabled("WebRTC-Audio-Engine-DefaultEnabledNS");
+    options.highpass_filter = env_.field_trials().IsEnabled("WebRTC-Audio-Engine-DefaultEnabledHPF");
     options.stereo_swapping = false;
     options.audio_jitter_buffer_max_packets = 200;
     options.audio_jitter_buffer_fast_accelerate = false;
@@ -595,11 +595,16 @@ void WebRtcVoiceEngine::ApplyOptions(const AudioOptions& options_in) {
                    << options_in.ToString();
   AudioOptions options = options_in;  // The options are modified below.
 
+  // Set and adjust echo canceller options.
+  // Use desktop AEC by default, when not using hardware AEC.
+  bool use_mobile_software_aec = false;
+
   // Skip AEC AGC NS option manipulation for iOS adn macOS.
 #if !(defined(WEBRTC_IOS) || defined(WEBRTC_MAC))
 
 #if defined(WEBRTC_ANDROID)
-  RTC_LOG(LS_INFO) << "Disable Android Aec Mobile";
+  use_mobile_software_aec = !env_.field_trials().IsDisabled("WebRTC-Audio-Engine-Android-AecMobile");
+  RTC_LOG(LS_INFO) << "Android Aec Mobile: " << (use_mobile_software_aec ? "enabled" : "disabled");
 #endif
 
 #if defined(WEBRTC_ANDROID)
@@ -696,6 +701,7 @@ void WebRtcVoiceEngine::ApplyOptions(const AudioOptions& options_in) {
 
   if (options.echo_cancellation) {
     apm_config.echo_canceller.enabled = *options.echo_cancellation;
+    apm_config.echo_canceller.mobile_mode = use_mobile_software_aec;
   }
 
   if (options.auto_gain_control) {
