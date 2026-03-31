@@ -59,6 +59,26 @@ const useconds_t kStartEngineRetryDelayMs = 100;
 const size_t kMaximumFramesPerBuffer = 3072;
 const size_t kAudioSampleSize = 2;  // Signed 16-bit integer
 
+// Maps AudioDuckingLevel to AVAudioVoiceProcessingOtherAudioDuckingLevel.
+// Uses explicit mapping to avoid assuming integer values match between enums.
+// Not available on tvOS.
+#if !TARGET_OS_TV
+API_AVAILABLE(ios(17.0), macos(14.0), macCatalyst(17.0), visionos(1.0))
+AVAudioVoiceProcessingOtherAudioDuckingLevel ToAVDuckingLevel(
+    AudioEngineDevice::AudioDuckingLevel level) {
+  switch (level) {
+    case AudioEngineDevice::AudioDuckingLevelDefault:
+      return AVAudioVoiceProcessingOtherAudioDuckingLevelDefault;
+    case AudioEngineDevice::AudioDuckingLevelMin:
+      return AVAudioVoiceProcessingOtherAudioDuckingLevelMin;
+    case AudioEngineDevice::AudioDuckingLevelMid:
+      return AVAudioVoiceProcessingOtherAudioDuckingLevelMid;
+    case AudioEngineDevice::AudioDuckingLevelMax:
+      return AVAudioVoiceProcessingOtherAudioDuckingLevelMax;
+  }
+}
+#endif
+
 AudioEngineDevice::AudioEngineDevice(bool voice_processing_bypassed)
     : task_queue_factory_(CreateDefaultTaskQueueFactory()), initialized_(false) {
   LOGI() << "voice_processing_bypassed " << voice_processing_bypassed;
@@ -86,6 +106,10 @@ AudioEngineDevice::AudioEngineDevice(bool voice_processing_bypassed)
 
   // Initial engine state
   engine_state_.voice_processing_bypassed = voice_processing_bypassed;
+}
+
+bool AudioEngineDevice::IsStopOnMuteModeEnabled() const {
+  return false;
 }
 
 AudioEngineDevice::~AudioEngineDevice() {
@@ -1227,9 +1251,9 @@ int32_t AudioEngineDevice::AdvancedDucking(bool* enabled) {
   return 0;
 }
 
-int32_t AudioEngineDevice::SetDuckingLevel(long level) {
+int32_t AudioEngineDevice::SetDuckingLevel(AudioDuckingLevel level) {
   RTC_DCHECK_RUN_ON(thread_);
-  LOGI() << "SetDuckingLevel: " << level;
+  LOGI() << "SetDuckingLevel: " << static_cast<int>(level);
 
   int32_t result = ModifyEngineState([level](EngineState state) -> EngineState {
     state.ducking_level = level;
@@ -1239,7 +1263,7 @@ int32_t AudioEngineDevice::SetDuckingLevel(long level) {
   return result;
 }
 
-int32_t AudioEngineDevice::DuckingLevel(long* level) {
+int32_t AudioEngineDevice::DuckingLevel(AudioDuckingLevel* level) {
   LOGI() << "DuckingLevel";
   RTC_DCHECK_RUN_ON(thread_);
 
@@ -1248,7 +1272,7 @@ int32_t AudioEngineDevice::DuckingLevel(long* level) {
   }
 
   *level = engine_state_.ducking_level;
-  LOGI() << "DuckingLevel value: " << *level;
+  LOGI() << "DuckingLevel value: " << static_cast<int>(*level);
 
   return 0;
 }
@@ -1899,8 +1923,14 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
   // --------------------------------------------------------------------------------------------
   // Step: Configure Voice-Processing I/O
   //
+  // Use cached state to avoid accessing inputNode() when voice processing is
+  // disabled – AVAudioInputNode can crash (EXC_BAD_ACCESS) when the audio
+  // hardware is unavailable, e.g. Mac Catalyst in background.
+  // After engine recreate, a fresh AVAudioEngine defaults VP to disabled.
+  bool effective_prev_vp =
+      state.IsEngineRecreateRequired() ? false : state.prev.voice_processing_enabled;
   if (state.next.IsInputEnabled() &&
-      inputNode().voiceProcessingEnabled != state.next.voice_processing_enabled) {
+      effective_prev_vp != state.next.voice_processing_enabled) {
 #if TARGET_OS_SIMULATOR
     LOGI() << "setVoiceProcessingEnabled (input): "
            << (state.next.voice_processing_enabled ? "YES" : "NO") << " (Ignored on Simulator)";
@@ -1917,7 +1947,7 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
     LOGI() << "setVoiceProcessingEnabled (input) result: " << set_vp_result ? "YES" : "NO";
 #endif
 
-    if (inputNode().voiceProcessingEnabled) {
+    if (state.next.voice_processing_enabled) {
       // Always unmute vp if restart mute mode.
       if (state.next.mute_mode == MuteMode::RestartEngine &&
           inputNode().voiceProcessingInputMuted) {
@@ -2269,7 +2299,7 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
     RTC_DCHECK(!engine_device_.running);
 
     // If disabling input, always unmute the voice-processing input mute.
-    if (inputNode().voiceProcessingEnabled && inputNode().voiceProcessingInputMuted) {
+    if (state.prev.voice_processing_enabled && inputNode().voiceProcessingInputMuted) {
       LOGI() << "Update mute (voice processing) unmuting vp for stop-recording";
       inputNode().voiceProcessingInputMuted = false;
     }
@@ -2329,7 +2359,7 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
   // Step: Run-time mute toggling if vp mode.
   //
   if (state.next.mute_mode == MuteMode::VoiceProcessing && state.next.IsInputEnabled() &&
-      inputNode().voiceProcessingEnabled &&
+      state.next.voice_processing_enabled &&
       inputNode().voiceProcessingInputMuted != state.next.input_muted) {
     LOGI() << "Update mute (voice processing) runtime update: " << state.next.input_muted;
     inputNode().voiceProcessingInputMuted = state.next.input_muted;
@@ -2352,7 +2382,7 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
   // Step: Configure other audio ducking
   //
 #if !TARGET_OS_TV
-  if (state.next.IsInputEnabled() && inputNode().voiceProcessingEnabled &&
+  if (state.next.IsInputEnabled() && state.next.voice_processing_enabled &&
       (!state.prev.IsInputEnabled() ||
        (state.prev.advanced_ducking != state.next.advanced_ducking ||
         state.prev.ducking_level != state.next.ducking_level))) {
@@ -2361,8 +2391,7 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
     if (@available(iOS 17.0, macCatalyst 17.0, macOS 14.0, visionOS 1.0, *)) {
       AVAudioVoiceProcessingOtherAudioDuckingConfiguration ducking_config;
       ducking_config.enableAdvancedDucking = state.next.advanced_ducking;
-      ducking_config.duckingLevel =
-          (AVAudioVoiceProcessingOtherAudioDuckingLevel)state.next.ducking_level;
+      ducking_config.duckingLevel = ToAVDuckingLevel(state.next.ducking_level);
 
       LOGI() << "setVoiceProcessingOtherAudioDuckingConfiguration";
       inputNode().voiceProcessingOtherAudioDuckingConfiguration = ducking_config;
@@ -2373,7 +2402,7 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
   // --------------------------------------------------------------------------------------------
   // Step: Bypass voice processing
   //
-  if (state.next.IsInputEnabled() && inputNode().voiceProcessingEnabled &&
+  if (state.next.IsInputEnabled() && state.next.voice_processing_enabled &&
       inputNode().voiceProcessingBypassed != state.next.voice_processing_bypassed) {
     LOGI() << "setting voiceProcessingBypassed: " << state.next.voice_processing_bypassed;
     inputNode().voiceProcessingBypassed = state.next.voice_processing_bypassed;
@@ -2382,7 +2411,7 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
   // --------------------------------------------------------------------------------------------
   // Step: Configure AGC
   //
-  if (state.next.IsInputEnabled() && inputNode().voiceProcessingEnabled &&
+  if (state.next.IsInputEnabled() && state.next.voice_processing_enabled &&
       inputNode().voiceProcessingAGCEnabled != state.next.voice_processing_agc_enabled) {
     LOGI() << "setting voiceProcessingAGCEnabled: " << state.next.voice_processing_agc_enabled;
     inputNode().voiceProcessingAGCEnabled = state.next.voice_processing_agc_enabled;

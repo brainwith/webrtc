@@ -551,10 +551,17 @@ void WebRtcVoiceEngine::Init() {
   // Set default engine options.
   {
     AudioOptions options;
+#if defined(WEBRTC_ANDROID)
+    options.echo_cancellation = true;
+    options.auto_gain_control = true;
+    options.noise_suppression = true;
+    options.highpass_filter = true;
+#else
     options.echo_cancellation = false;
     options.auto_gain_control = false;
     options.noise_suppression = false;
     options.highpass_filter = false;
+#endif
     options.stereo_swapping = false;
     options.audio_jitter_buffer_max_packets = 200;
     options.audio_jitter_buffer_fast_accelerate = false;
@@ -1752,7 +1759,18 @@ bool WebRtcVoiceSendChannel::MuteStream(uint32_t ssrc, bool muted) {
       if (adm) {
         RTC_LOG(LS_INFO) << "WebRtcVoiceSendChannel::MuteStream: ADM:"
                          << is_all_muted;
-        adm->SetMicrophoneMute(is_all_muted);
+
+        if (adm->IsStopOnMuteModeEnabled()) {
+          if (!is_all_muted && !adm->Recording()) {
+            if (adm->InitRecording() == 0) {
+              adm->StartRecording();
+            }
+          } else if (is_all_muted && adm->Recording()) {
+            adm->StopRecording();
+          }
+        } else {
+          adm->SetMicrophoneMute(is_all_muted);
+        }
       }
     }
   }
