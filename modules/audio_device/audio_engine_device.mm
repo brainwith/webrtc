@@ -451,6 +451,7 @@ int32_t AudioEngineDevice::StartRecording() {
 
   int32_t result = ModifyEngineState([](EngineState state) -> EngineState {
     state.input_running = true;
+    state.input_keep_alive = false;
     state.input_muted = false;  // Always unmute
     return state;
   });
@@ -463,8 +464,19 @@ int32_t AudioEngineDevice::StopRecording() {
   RTC_DCHECK_RUN_ON(thread_);
 
   int32_t result = ModifyEngineState([](EngineState state) -> EngineState {
-    state.input_enabled = false;
-    state.input_running = false;
+    if (state.input_enabled_persistent_mode) {
+      // Keep the AVAudioEngine graph alive while there are no active send streams.
+      // Recording() still reports false via input_running, so AudioState can call
+      // StartRecording() again as soon as a sender is re-created.
+      state.input_enabled = false;
+      state.input_running = false;
+      state.input_keep_alive = true;
+      state.input_muted = true;
+    } else {
+      state.input_enabled = false;
+      state.input_running = false;
+      state.input_keep_alive = false;
+    }
     return state;
   });
 
@@ -1219,6 +1231,7 @@ int32_t AudioEngineDevice::InitAndStartRecording() {
   int32_t result = ModifyEngineState([](EngineState state) -> EngineState {
     state.input_enabled = true;
     state.input_running = true;
+    state.input_keep_alive = false;
     state.input_muted = false;  // Always unmute
     return state;
   });
@@ -1283,6 +1296,9 @@ int32_t AudioEngineDevice::SetInitRecordingPersistentMode(bool enable) {
 
   int32_t result = ModifyEngineState([enable](EngineState state) -> EngineState {
     state.input_enabled_persistent_mode = enable;
+    if (!enable) {
+      state.input_keep_alive = false;
+    }
     return state;
   });
 
@@ -1785,6 +1801,7 @@ int32_t AudioEngineDevice::ApplyDeviceEngineState(EngineStateUpdate state) {
   auto log_engine_state = [&](const char* label, const EngineState& s) {
     LOGI() << label << ": "
            << "in=" << s.input_enabled << "/" << s.input_running
+           << " keepAlive=" << s.input_keep_alive
            << " out=" << s.output_enabled << "/" << s.output_running
            << " persistent=" << s.input_enabled_persistent_mode
            << " muted=" << s.input_muted

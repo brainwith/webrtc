@@ -166,6 +166,18 @@ std::string to_hex(const uint8_t* data, int len) {
   return ss.str();
 }
 
+bool IsSilentAudioFrame(webrtc::TransformableFrameInterface* frame,
+                        webrtc::FrameCryptorTransformer::MediaType media_type) {
+  if (!frame || media_type != webrtc::FrameCryptorTransformer::MediaType::kAudioFrame) {
+    return false;
+  }
+
+  auto* audio_frame =
+      static_cast<webrtc::TransformableAudioFrameInterface*>(frame);
+  return audio_frame->Type() ==
+         webrtc::TransformableAudioFrameInterface::FrameType::kEmptyFrame;
+}
+
 uint8_t get_unencrypted_bytes(webrtc::TransformableFrameInterface* frame,
                               webrtc::FrameCryptorTransformer::MediaType type) {
   uint8_t unencrypted_bytes = 0;
@@ -470,8 +482,11 @@ void FrameCryptorTransformer::encryptFrame(
 
   webrtc::ArrayView<const uint8_t> data_in = frame->GetData();
   if (data_in.size() == 0 || !enabled_cryption) {
-    RTC_LOG(LS_WARNING) << "FrameCryptorTransformer::encryptFrame() "
-                           "data_in.size() == 0 || enabled_cryption == false";
+
+    if (!IsSilentAudioFrame(frame.get(), type_)) {
+      RTC_LOG(LS_WARNING) << "FrameCryptorTransformer::encryptFrame() "
+                            "data_in.size() == 0 || enabled_cryption == false";
+    }
     if (key_provider_->options().discard_frame_when_cryptor_not_ready) {
       return;
     }
@@ -587,8 +602,10 @@ void FrameCryptorTransformer::decryptFrame(
   webrtc::ArrayView<const uint8_t> data_in = frame->GetData();
 
   if (data_in.size() == 0 || !enabled_cryption) {
-    RTC_LOG(LS_WARNING) << "FrameCryptorTransformer::decryptFrame() "
-                           "data_in.size() == 0 || enabled_cryption == false";
+    if (!IsSilentAudioFrame(frame.get(), type_)) {
+      RTC_LOG(LS_WARNING) << "FrameCryptorTransformer::decryptFrame() "
+                            "data_in.size() == 0 || enabled_cryption == false";
+    }
     if (key_provider_->options().discard_frame_when_cryptor_not_ready) {
       return;
     }

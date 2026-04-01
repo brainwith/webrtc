@@ -132,6 +132,7 @@ class AudioEngineDevice : public AudioDeviceModule, public AudioSessionObserver 
   struct EngineState {
     bool input_enabled = false;
     bool input_running = false;
+    bool input_keep_alive = false;
     bool output_enabled = false;
     bool output_running = false;
 
@@ -160,6 +161,7 @@ class AudioEngineDevice : public AudioDeviceModule, public AudioSessionObserver 
 
     bool operator==(const EngineState& rhs) const {
       return input_enabled == rhs.input_enabled && input_running == rhs.input_running &&
+             input_keep_alive == rhs.input_keep_alive &&
              output_enabled == rhs.output_enabled && output_running == rhs.output_running &&
              input_available == rhs.input_available && output_available == rhs.output_available &&
              input_enabled_persistent_mode == rhs.input_enabled_persistent_mode &&
@@ -229,9 +231,10 @@ class AudioEngineDevice : public AudioDeviceModule, public AudioSessionObserver 
 
       switch (render_mode) {
         case RenderMode::Device:
-          return !(mute_mode == MuteMode::RestartEngine && input_muted) && input_running;
+          return !(mute_mode == MuteMode::RestartEngine && input_muted) &&
+                 (input_running || input_keep_alive);
         case RenderMode::Manual:
-          return input_running || output_running;
+          return input_running || input_keep_alive || output_running;
       }
     }
 

@@ -190,6 +190,11 @@ class AudioDeviceBuffer {
   bool playing_ RTC_GUARDED_BY(main_thread_checker_);
   bool recording_ RTC_GUARDED_BY(main_thread_checker_);
 
+  // Throttle warnings when audio keeps running without an attached transport
+  // (e.g. persistent/keepalive engine mode during reconnect).
+  std::atomic<bool> logged_missing_record_transport_{false};
+  std::atomic<bool> logged_missing_play_transport_{false};
+
   // Buffer used for audio samples to be played out. Size can be changed
   // dynamically. The 16-bit samples are interleaved, hence the size is
   // proportional to the number of channels.

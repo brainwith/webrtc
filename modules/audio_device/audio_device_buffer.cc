@@ -107,6 +107,10 @@ int32_t AudioDeviceBuffer::RegisterAudioCallback(
     RTC_LOG(LS_WARNING) << "Setting audio transport while media is active";
   }
   audio_transport_cb_ = audio_callback;
+  if (audio_callback != nullptr) {
+    logged_missing_record_transport_.store(false, std::memory_order_relaxed);
+    logged_missing_play_transport_.store(false, std::memory_order_relaxed);
+  }
   return 0;
 }
 
@@ -130,6 +134,7 @@ void AudioDeviceBuffer::StartPlayout() {
   // Clear members that are only touched on the main (creating) thread.
   play_start_time_ = now_time;
   playing_ = true;
+  logged_missing_play_transport_.store(false, std::memory_order_relaxed);
 }
 
 void AudioDeviceBuffer::StartRecording() {
@@ -148,6 +153,7 @@ void AudioDeviceBuffer::StartRecording() {
   // Clear members that will be touched on the main (creating) thread.
   rec_start_time_ = env_.clock().TimeInMilliseconds();
   recording_ = true;
+  logged_missing_record_transport_.store(false, std::memory_order_relaxed);
   // And finally a member which can be modified on the native audio thread.
   // It is safe to do so since we know by design that the owning ADM has not
   // yet started the native audio recording.
@@ -325,9 +331,14 @@ int32_t AudioDeviceBuffer::SetRecordedBuffer(
 
 int32_t AudioDeviceBuffer::DeliverRecordedData() {
   if (!audio_transport_cb_) {
-    RTC_LOG(LS_WARNING) << "Invalid audio transport";
+    if (!logged_missing_record_transport_.exchange(true,
+                                                   std::memory_order_relaxed)) {
+      RTC_LOG(LS_INFO)
+          << "Missing audio transport for recording; dropping recorded data";
+    }
     return 0;
   }
+  logged_missing_record_transport_.store(false, std::memory_order_relaxed);
   const size_t frames = rec_buffer_.size() / rec_channels_;
   const size_t bytes_per_frame = rec_channels_ * sizeof(int16_t);
   uint32_t new_mic_level_dummy = 0;
@@ -359,9 +370,14 @@ int32_t AudioDeviceBuffer::RequestPlayoutData(size_t samples_per_channel) {
   // It is currently supported to start playout without a valid audio
   // transport object. Leads to warning and silence.
   if (!audio_transport_cb_) {
-    RTC_LOG(LS_WARNING) << "Invalid audio transport";
+    if (!logged_missing_play_transport_.exchange(true,
+                                                 std::memory_order_relaxed)) {
+      RTC_LOG(LS_INFO)
+          << "Missing audio transport for playout; rendering silence";
+    }
     return 0;
   }
+  logged_missing_play_transport_.store(false, std::memory_order_relaxed);
 
   // Retrieve new 16-bit PCM audio data using the audio transport instance.
   int64_t elapsed_time_ms = -1;
